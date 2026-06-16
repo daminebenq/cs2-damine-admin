@@ -5,6 +5,7 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Admin;
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Entities;
 using CounterStrikeSharp.API.Modules.Menu;
 using CounterStrikeSharp.API.Modules.Timers;
@@ -24,9 +25,9 @@ namespace DamineAdmin;
 public sealed class DamineAdmin : BasePlugin
 {
     public override string ModuleName => "Damine Admin";
-    public override string ModuleVersion => "1.4.0";
+    public override string ModuleVersion => "1.5.0";
     public override string ModuleAuthor => "damine";
-    public override string ModuleDescription => "Self-contained admin: kick/ban/slay/slap/timed-gag+mute/teleport/hp/team + workshop map change & map vote + admin menu + timed advertisements. All entity actions deferred to next frame (crash-safe).";
+    public override string ModuleDescription => "Self-contained admin: kick/ban/slay/slap/timed-gag+mute/teleport/hp/armor/team/swap + strip/give/blind/respawn/noclip/god + workshop map change, vote, extend & round-restart + center-say/warn + rcon + admin menu + timed advertisements. All entity actions deferred to next frame (crash-safe).";
 
     private const string Tag = "\x04[Admin]\x01";
 
@@ -334,6 +335,55 @@ public sealed class DamineAdmin : BasePlugin
     public void CmdRespawn(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
         ForEachTarget(caller, cmd, t => DoRespawn(caller, t)));
 
+    [ConsoleCommand("css_strip", "Remove all of a player's weapons")]
+    [ConsoleCommand("css_sm_strip", "Remove all of a player's weapons")]
+    [RequiresPermissions("@css/slay")]
+    [CommandHelper(minArgs: 1, usage: "<target>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdStrip(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+        ForEachTarget(caller, cmd, t => DoStrip(caller, t)));
+
+    [ConsoleCommand("css_give", "Give a weapon to a player")]
+    [ConsoleCommand("css_sm_give", "Give a weapon to a player")]
+    [RequiresPermissions("@css/cheats")]
+    [CommandHelper(minArgs: 2, usage: "<target> <weapon>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdGive(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+    {
+        var w = cmd.GetArg(2).Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(w)) { cmd.ReplyToCommand($"{Tag} Provide a weapon, e.g. ak47."); return; }
+        if (!w.StartsWith("weapon_") && !w.StartsWith("item_")) w = "weapon_" + w;
+        ForEachTarget(caller, cmd, t => DoGive(caller, t, w));
+    });
+
+    [ConsoleCommand("css_armor", "Set a player's armor (default 100)")]
+    [ConsoleCommand("css_sm_armor", "Set a player's armor (default 100)")]
+    [RequiresPermissions("@css/slay")]
+    [CommandHelper(minArgs: 1, usage: "<target> [value]", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdArmor(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+    {
+        var v = ParseInt(cmd.GetArg(2), 100);
+        if (v < 0) v = 0;
+        ForEachTarget(caller, cmd, t => DoArmor(caller, t, v));
+    });
+
+    [ConsoleCommand("css_blind", "Flash/blind a player (default 5s, max 30)")]
+    [ConsoleCommand("css_sm_blind", "Flash/blind a player (default 5s, max 30)")]
+    [RequiresPermissions("@css/slay")]
+    [CommandHelper(minArgs: 1, usage: "<target> [seconds]", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdBlind(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+    {
+        var secs = ParseInt(cmd.GetArg(2), 5);
+        if (secs < 1) secs = 1;
+        if (secs > 30) secs = 30;
+        ForEachTarget(caller, cmd, t => DoBlind(caller, t, secs));
+    });
+
+    [ConsoleCommand("css_swap", "Swap a player to the opposite team")]
+    [ConsoleCommand("css_sm_swap", "Swap a player to the opposite team")]
+    [RequiresPermissions("@css/slay")]
+    [CommandHelper(minArgs: 1, usage: "<target>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdSwap(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+        ForEachTarget(caller, cmd, t => DoSwap(caller, t)));
+
     // ----------------------------------------------------------------- movement
 
     [ConsoleCommand("css_bring", "Teleport a player to you")]
@@ -387,6 +437,70 @@ public sealed class DamineAdmin : BasePlugin
     [CommandHelper(minArgs: 1, usage: "<message>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
     public void CmdSay(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
         Server.PrintToChatAll($" {ChatColors.Red}(ADMIN) {ChatColors.Default}{ArgsFrom(cmd, 1, string.Empty)}"));
+
+    [ConsoleCommand("css_csay", "Send a center (HUD) message to everyone")]
+    [ConsoleCommand("css_sm_csay", "Send a center (HUD) message to everyone")]
+    [RequiresPermissions("@css/chat")]
+    [CommandHelper(minArgs: 1, usage: "<message>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdCsay(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+    {
+        var msg = ArgsFrom(cmd, 1, string.Empty);
+        if (string.IsNullOrWhiteSpace(msg)) return;
+        Defer(() => { foreach (var p in Players()) { if (p is { IsValid: true }) p.PrintToCenter(msg); } });
+    });
+
+    [ConsoleCommand("css_warn", "Privately warn a player in chat")]
+    [ConsoleCommand("css_sm_warn", "Privately warn a player in chat")]
+    [RequiresPermissions("@css/chat")]
+    [CommandHelper(minArgs: 2, usage: "<target> <message>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdWarn(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+    {
+        var msg = ArgsFrom(cmd, 2, string.Empty);
+        if (string.IsNullOrWhiteSpace(msg)) { cmd.ReplyToCommand($"{Tag} Provide a warning message."); return; }
+        var t = ResolveTargets(cmd.GetArg(1), caller).FirstOrDefault(p => !p.IsBot);
+        if (t is null) { cmd.ReplyToCommand($"{Tag} No matching human player."); return; }
+        DoWarn(caller, t, msg);
+    });
+
+    [ConsoleCommand("css_extend", "Extend the current map time limit (minutes, default 15)")]
+    [ConsoleCommand("css_sm_extend", "Extend the current map time limit (minutes, default 15)")]
+    [RequiresPermissions("@css/changemap")]
+    [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdExtend(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+    {
+        var mins = ParseInt(cmd.GetArg(1), 15);
+        if (mins < 1) mins = 1;
+        Defer(() =>
+        {
+            var cv = ConVar.Find("mp_timelimit");
+            var cur = cv?.GetPrimitiveValue<float>() ?? 0f;
+            Server.ExecuteCommand($"mp_timelimit {cur + mins}");
+        });
+        Announce($"{CallerName(caller)} extended the map by {mins} minute{(mins == 1 ? "" : "s")}.");
+    });
+
+    [ConsoleCommand("css_rr", "Restart the round")]
+    [ConsoleCommand("css_sm_rr", "Restart the round")]
+    [RequiresPermissions("@css/slay")]
+    [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdRr(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+    {
+        Announce($"{CallerName(caller)} restarted the round.");
+        Defer(() => Server.ExecuteCommand("mp_restartgame 1"));
+    });
+
+    [ConsoleCommand("css_rcon", "Execute a server console command")]
+    [ConsoleCommand("css_sm_rcon", "Execute a server console command")]
+    [RequiresPermissions("@css/root")]
+    [CommandHelper(minArgs: 1, usage: "<command>", whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void CmdRcon(CCSPlayerController? caller, CommandInfo cmd) => Guard(cmd, () =>
+    {
+        var line = ArgsFrom(cmd, 1, string.Empty);
+        if (string.IsNullOrWhiteSpace(line)) return;
+        Logger.LogInformation("RCON by {Admin}: {Cmd}", CallerName(caller), line);
+        Defer(() => Server.ExecuteCommand(line));
+        Reply(caller, $"{Tag} Executed: {line}");
+    });
 
     // Arbitrary map changer. GameModeManager owns "css_map" (!map), so we register
     // only "css_sm_map" / "css_ws" to avoid any command collision.
@@ -647,6 +761,60 @@ public sealed class DamineAdmin : BasePlugin
             t.PlayerName = newName;
             Utilities.SetStateChanged(t, "CBasePlayerController", "m_iszPlayerName");
         });
+    }
+
+    private void DoStrip(CCSPlayerController? by, CCSPlayerController t)
+    {
+        Announce($"{CallerName(by)} stripped {t.PlayerName}'s weapons");
+        Defer(() => { if (t is { IsValid: true, PawnIsAlive: true }) t.RemoveWeapons(); });
+    }
+
+    private void DoGive(CCSPlayerController? by, CCSPlayerController t, string weapon)
+    {
+        Announce($"{CallerName(by)} gave {t.PlayerName} {weapon}");
+        Defer(() => { if (t is { IsValid: true, PawnIsAlive: true }) t.GiveNamedItem(weapon); });
+    }
+
+    private void DoArmor(CCSPlayerController? by, CCSPlayerController t, int armor)
+    {
+        Announce($"{CallerName(by)} set {t.PlayerName}'s armor to {armor}");
+        Defer(() =>
+        {
+            if (t is not { IsValid: true, PawnIsAlive: true }) return;
+            var pawn = t.PlayerPawn?.Value;
+            if (pawn is not { IsValid: true }) return;
+            pawn.ArmorValue = armor;
+            Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_ArmorValue");
+        });
+    }
+
+    private void DoBlind(CCSPlayerController? by, CCSPlayerController t, int seconds)
+    {
+        Announce($"{CallerName(by)} blinded {t.PlayerName} for {seconds}s");
+        Defer(() =>
+        {
+            if (t is not { IsValid: true, PawnIsAlive: true }) return;
+            var pawn = t.PlayerPawn?.Value;
+            if (pawn is not { IsValid: true }) return;
+            pawn.FlashDuration = seconds;
+            pawn.FlashMaxAlpha = 255f;
+            Utilities.SetStateChanged(pawn, "CCSPlayerPawnBase", "m_flFlashDuration");
+        });
+    }
+
+    private void DoSwap(CCSPlayerController? by, CCSPlayerController t)
+    {
+        var opp = t.Team == CsTeam.CounterTerrorist ? CsTeam.Terrorist
+                : t.Team == CsTeam.Terrorist ? CsTeam.CounterTerrorist
+                : (CsTeam?)null;
+        if (opp is null) { Reply(by, $"{Tag} {t.PlayerName} isn't on a playing team."); return; }
+        DoTeam(by, t, opp.Value);
+    }
+
+    private void DoWarn(CCSPlayerController? by, CCSPlayerController t, string msg)
+    {
+        Announce($"{CallerName(by)} warned {t.PlayerName}");
+        Defer(() => { if (t is { IsValid: true }) t.PrintToChat($" {Tag} {ChatColors.Red}WARNING: {ChatColors.Default}{msg}"); });
     }
 
     // ----------------------------------------------------------------- map change + vote
